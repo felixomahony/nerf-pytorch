@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import pickle
 
 
 # Misc
@@ -62,36 +63,40 @@ def get_embedder(multires, i=0):
     embed = lambda x, eo=embedder_obj : eo.embed(x)
     return embed, embedder_obj.out_dim
 
+class Appendix(nn.Module):
+    def __init__(self, W = 32, input_ch = 2, n_layers = 3):
+        super(Appendix, self).__init__()
+        self.layer0 = nn.Linear(input_ch, W)
+        self.layers = [nn.Linear(W, W) for i in range(n_layers-2)]
+        self.layer_final = nn.Linear(W, 3)
+        self.actv = nn.ReLU()
+    def forward(self, x):
+        h = self.layer0(x)
+        h = self.actv(h)
+        for l in self.layers:
+            h = l(h)
+            h = self.actv(h)
+        h = self.layer_final(h)
+        return h
 
-# Model
-class NeRF(nn.Module):
+class FMap(nn.Module):
     def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False):
-        """ 
-        """
-        super(NeRF, self).__init__()
+        super(FMap, self).__init__()
         self.D = D
         self.W = W
         self.input_ch = input_ch
         self.input_ch_views = input_ch_views
         self.skips = skips
         self.use_viewdirs = use_viewdirs
-        
         self.pts_linears = nn.ModuleList(
             [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
         
         ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
         self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W//2)])
 
-        ### Implementation according to the paper
-        # self.views_linears = nn.ModuleList(
-        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
-        
-        if use_viewdirs:
-            self.feature_linear = nn.Linear(W, W)
-            self.alpha_linear = nn.Linear(W, 1)
-            self.rgb_linear = nn.Linear(W//2, 3)
-        else:
-            self.output_linear = nn.Linear(W, output_ch)
+        self.feature_linear = nn.Linear(W, W)
+        self.alpha_linear = nn.Linear(W, 1)
+        self.feature_final = nn.Linear(W//2, 2)
 
     def forward(self, x):
         input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
@@ -101,19 +106,71 @@ class NeRF(nn.Module):
             h = F.relu(h)
             if i in self.skips:
                 h = torch.cat([input_pts, h], -1)
+        alpha = self.alpha_linear(h)
+        feature = self.feature_linear(h)
+        h = torch.cat([feature, input_views], -1)
+    
+        for i, l in enumerate(self.views_linears):
+            h = self.views_linears[i](h)
+            h = F.relu(h)
 
-        if self.use_viewdirs:
-            alpha = self.alpha_linear(h)
-            feature = self.feature_linear(h)
-            h = torch.cat([feature, input_views], -1)
+        feature_map = self.feature_final(h)
+        # feature_map = F.sigmoid(feature_map)
         
-            for i, l in enumerate(self.views_linears):
-                h = self.views_linears[i](h)
-                h = F.relu(h)
+        return alpha, feature_map
 
-            rgb = self.rgb_linear(h)
-            outputs = torch.cat([rgb, alpha], -1)
+
+# Model
+class NeRF(nn.Module):
+    def __init__(self, D=8, W=256, input_ch=3, input_ch_views=3, output_ch=4, skips=[4], use_viewdirs=False):
+        """ 
+        This model is now split in two. FMap is the encoder (to feature map), while Appendix is the decoder (to rgb)
+        """
+        super(NeRF, self).__init__()
+
+        ### Implementation according to the paper
+        # self.views_linears = nn.ModuleList(
+        #     [nn.Linear(input_ch_views + W, W//2)] + [nn.Linear(W//2, W//2) for i in range(D//2)])
+        self.use_viewdirs = use_viewdirs
+        
+        if use_viewdirs:
+            self.fmap_0 = FMap(D, W, input_ch, input_ch_views, output_ch, skips, use_viewdirs)
+            self.appendix_0 = Appendix()
+
+            self.fmap_1 = FMap(D, W, input_ch, input_ch_views, output_ch, skips, use_viewdirs)
+            self.appendix_1 = Appendix()
         else:
+            self.D = D
+            self.W = W
+            self.input_ch = input_ch
+            self.input_ch_views = input_ch_views
+            self.skips = skips
+            
+            self.pts_linears = nn.ModuleList(
+                [nn.Linear(input_ch, W)] + [nn.Linear(W, W) if i not in self.skips else nn.Linear(W + input_ch, W) for i in range(D-1)])
+            
+            ### Implementation according to the official code release (https://github.com/bmild/nerf/blob/master/run_nerf_helpers.py#L104-L105)
+            self.views_linears = nn.ModuleList([nn.Linear(input_ch_views + W, W//2)])
+            self.output_linear = nn.Linear(W, output_ch)
+
+    def forward(self, x, fmap_1 : bool, appendix_1 : bool, save_files = False):
+        # print(fmap_1, appendix_1)
+        if self.use_viewdirs:
+            alpha, feature_map = self.fmap_1(x) if fmap_1 else self.fmap_0(x)
+            rgb = self.appendix_1(feature_map) if appendix_1 else self.appendix_0(feature_map)
+            outputs = torch.cat([rgb, alpha], -1)
+            if save_files:
+                with open("logs/compound/network_ins.pkl", "wb") as f:
+                    pickle.dump((x, alpha, feature_map, rgb), f)
+                
+        else:
+            input_pts, input_views = torch.split(x, [self.input_ch, self.input_ch_views], dim=-1)
+            h = input_pts
+            for i, l in enumerate(self.pts_linears):
+                h = self.pts_linears[i](h)
+                h = F.relu(h)
+                if i in self.skips:
+                    h = torch.cat([input_pts, h], -1)
             outputs = self.output_linear(h)
 
         return outputs    
