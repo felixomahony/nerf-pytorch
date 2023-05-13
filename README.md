@@ -1,7 +1,7 @@
 # Joint Training for Style Transfer
 [PDF Report](report/project_report.pdf)
 
-This git repository, modified from the original, is the code used in the final paper of Felix O'Mahony for class COS 526 - Joint Training for Style Transfer in NeRF.
+This git repository, modified from the [original NeRF for Pytorch project](https://github.com/yenchenlin/nerf-pytorch), is the code used in the final paper of Felix O'Mahony for class COS 526 - Joint Training for Style Transfer in NeRF. All updates can be checked by looking at the commit history for this project. Note that the very first commit entails copying the contents of `run_nerf.py` to a new file `run_compound_nerf.py`. This was a duplication of a file which already existed in the [original](https://github.com/yenchenlin/nerf-pytorch) and therefore this commit should therefore not be regarded as work undertaken by myself (Felix O'Mahony).
 
 The new method permits the modification of the style of a three-dimensional scene generated with NeRF. Whereas existing methods for style transfer typically rely on transforming the style of a NeRF model's training image set to adapt styles, we propose a method which modifies the model directly. In our method, a reference scene is generated in two styles. In one, the style resembles that of the target scene. Another serves as a desired style, which resembles the desired appearance of the target scene. By training two networks in parallel, we are able to transfer the style from the reference model in the desired style to the target scene.
 
@@ -18,7 +18,7 @@ The script can be run locally from `run_compound_nerf.py`. This will train a mod
 
 ## Modifications to Original
 
-Several files are modified and added to this project to make the script work.
+Several files are modified and added to the [original project](https://github.com/yenchenlin/nerf-pytorch) to make the script work.
 - `./data/` Four new datasets are generated and placed here. `sphere/` is the reference scene in original style. `sphere_blue/`, `sphere_relit/`, `sphere_texture/` show the same content in different styles. 
 - `./blender/` carries all the blender files used to produce the new scenes.
 - `run_nerf_helpers` has been modified to split the network in two. The `FMap` class is the encoder, while `Appendix` is the decoder.
